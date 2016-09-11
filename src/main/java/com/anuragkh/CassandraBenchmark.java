@@ -71,7 +71,7 @@ public class CassandraBenchmark {
   private void truncateTable() {
     LOG.info("Truncating table " + datasetName);
     Session session = cluster.connect("bench");
-    session.execute("TRUNCATE TABLE " + datasetName + ";");
+    session.execute("TRUNCATE " + datasetName + ";");
     session.close();
     LOG.info("Table truncated.");
   }
