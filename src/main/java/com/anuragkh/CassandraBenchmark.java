@@ -17,6 +17,7 @@ public class CassandraBenchmark {
   private String insertPath;
   private String filterPath;
   private AtomicLong currentKey;
+  private long preLoadedKeys;
   private Random rng;
   private Logger LOG = Logger.getLogger(CassandraBenchmark.class.getName());
 
@@ -56,6 +57,8 @@ public class CassandraBenchmark {
       currentKey.set(countRows());
       LOG.info("Skipping data loading as instructed...");
     }
+    this.preLoadedKeys = currentKey.get();
+    LOG.info("Current key is " + currentKey.get());
 
     LOG.info("Initialization complete.");
   }
@@ -195,7 +198,7 @@ public class CassandraBenchmark {
     LOG.info("Generating get queries...");
     ArrayList<String> queries = new ArrayList<>();
     for (int i = 0; i < numQueries; i++) {
-      long key = rng.nextLong() % currentKey.get();
+      long key = rng.nextLong() % preLoadedKeys;
       queries.add(getStatement(key));
     }
     Collections.shuffle(queries);
