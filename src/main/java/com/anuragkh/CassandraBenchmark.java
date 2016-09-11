@@ -49,10 +49,11 @@ public class CassandraBenchmark {
 
     createTable();
 
-    this.currentKey = new AtomicLong(countRows());
+    this.currentKey = new AtomicLong(0L);
     if (enableLoading) {
       loadData();
     } else {
+      currentKey.set(countRows());
       LOG.info("Skipping data loading as instructed...");
     }
 

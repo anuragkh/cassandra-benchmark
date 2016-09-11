@@ -2,10 +2,14 @@ package com.anuragkh;
 
 import org.apache.commons.cli.*;
 
+import java.util.logging.Logger;
+
 public class BenchmarkMain {
   public static void main(String[] args) {
     String logFormat = "%1$tF %1$tT %4$s %2$s %5$s%6$s%n";
     System.setProperty("java.util.logging.SimpleFormatter.format", logFormat);
+
+    Logger LOG = Logger.getLogger(BenchmarkMain.class.getName());
 
     Options options = new Options();
 
@@ -34,6 +38,9 @@ public class BenchmarkMain {
 
     Option loadDataOpt = new Option("l", false, "Load data from input data path.");
     options.addOption(loadDataOpt);
+
+    Option benchOpt = new Option("b", false, "Execute benchmark.");
+    options.addOption(benchOpt);
 
     CommandLineParser parser = new DefaultParser();
     HelpFormatter formatter = new HelpFormatter();
@@ -77,37 +84,41 @@ public class BenchmarkMain {
     CassandraBenchmark benchmark =
       new CassandraBenchmark(hostname, datasetName, numAttrs, disableComp, dataPath, enableLoad);
 
-    switch (benchmarkType) {
-      case "latency-get":
-        benchmark.benchmarkGetLatency();
-        break;
-      case "latency-insert":
-        benchmark.benchmarkInsertLatency();
-        break;
-      case "latency-delete":
-        benchmark.benchmarkDeleteLatency();
-        break;
-      case "latency-filter":
-        benchmark.benchmarkFilterLatency();
-        break;
-      default:
-        if (benchmarkType.startsWith("throughput")) {
-          String[] parts = benchmarkType.split("\\-");
-          if (parts.length != 5) {
-            benchmark.close();
+    if (cmd.hasOption('b')) {
+      switch (benchmarkType) {
+        case "latency-get":
+          benchmark.benchmarkGetLatency();
+          break;
+        case "latency-insert":
+          benchmark.benchmarkInsertLatency();
+          break;
+        case "latency-delete":
+          benchmark.benchmarkDeleteLatency();
+          break;
+        case "latency-filter":
+          benchmark.benchmarkFilterLatency();
+          break;
+        default:
+          if (benchmarkType.startsWith("throughput")) {
+            String[] parts = benchmarkType.split("\\-");
+            if (parts.length != 5) {
+              benchmark.close();
+              System.out.println("Invalid benchmarkType: " + benchmarkType);
+              formatter.printHelp("cassandra-bench", options);
+              break;
+            }
+            double getFrac = Double.parseDouble(parts[1]);
+            double insertFrac = Double.parseDouble(parts[2]);
+            double deleteFrac = Double.parseDouble(parts[3]);
+            double filterFrac = Double.parseDouble(parts[4]);
+            benchmark.benchmarkThroughput(getFrac, insertFrac, deleteFrac, filterFrac, numThreads);
+          } else {
             System.out.println("Invalid benchmarkType: " + benchmarkType);
             formatter.printHelp("cassandra-bench", options);
-            break;
           }
-          double getFrac = Double.parseDouble(parts[1]);
-          double insertFrac = Double.parseDouble(parts[2]);
-          double deleteFrac = Double.parseDouble(parts[3]);
-          double filterFrac = Double.parseDouble(parts[4]);
-          benchmark.benchmarkThroughput(getFrac, insertFrac, deleteFrac, filterFrac, numThreads);
-        } else {
-          System.out.println("Invalid benchmarkType: " + benchmarkType);
-          formatter.printHelp("cassandra-bench", options);
-        }
+      }
+    } else {
+      LOG.info("Skipping benchmark phase as instructed.");
     }
 
     benchmark.close();
