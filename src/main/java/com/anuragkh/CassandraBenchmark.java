@@ -1,9 +1,6 @@
 package com.anuragkh;
 
-import com.datastax.driver.core.Cluster;
-import com.datastax.driver.core.ResultSet;
-import com.datastax.driver.core.Row;
-import com.datastax.driver.core.Session;
+import com.datastax.driver.core.*;
 
 import java.io.*;
 import java.util.*;
@@ -29,9 +26,9 @@ public class CassandraBenchmark {
 
   static final int THREAD_QUERY_COUNT = 75000;
 
-  static final long WARMUP_TIME = 50000000;
-  static final long MEASURE_TIME = 100000000;
-  static final long COOLDOWN_TIME = 50000000;
+  static final long WARMUP_TIME = 30000;
+  static final long MEASURE_TIME = 120000;
+  static final long COOLDOWN_TIME = 30000;
 
   public CassandraBenchmark(String hostname, String datasetName, int numAttributes,
     boolean disableCompression, String dataPath, boolean enableLoading) {
@@ -45,7 +42,8 @@ public class CassandraBenchmark {
     this.rng = new Random();
 
     LOG.info("Creating cluster builder...");
-    cluster = Cluster.builder().addContactPoint(hostname).build();
+    cluster = Cluster.builder().addContactPoint(hostname)
+      .withSocketOptions(new SocketOptions().setReadTimeoutMillis(120000)).build();
 
     createKeyspace();
 
