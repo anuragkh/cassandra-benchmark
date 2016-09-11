@@ -47,12 +47,9 @@ public class CassandraBenchmark {
     LOG.info("Creating cluster builder...");
     cluster = Cluster.builder().addContactPoint(hostname).build();
 
-    // Create `bench` keyspace if it does not exist
-    LOG.info("Attempting to create `bench` keyspace (if it does not exist)...");
-    Session session = cluster.connect();
-    session.execute("CREATE KEYSPACE IF NOT EXISTS bench WITH "
-      + "replication = {'class':'SimpleStrategy','replication_factor':1}");
-    session.close();
+    createKeyspace();
+
+    createTable();
 
     this.currentKey = new AtomicLong(countRows());
     if (enableLoading) {
@@ -79,6 +76,15 @@ public class CassandraBenchmark {
     LOG.info("Table truncated.");
   }
 
+  private void createKeyspace() {
+    // Create `bench` keyspace if it does not exist
+    LOG.info("Attempting to create `bench` keyspace (if it does not exist)...");
+    Session session = cluster.connect();
+    session.execute("CREATE KEYSPACE IF NOT EXISTS bench WITH "
+      + "replication = {'class':'SimpleStrategy','replication_factor':1}");
+    session.close();
+  }
+
   private void createTable() {
     LOG.info("Creating table " + datasetName + " (if it does not exist)...");
     Session session = cluster.connect("bench");
@@ -95,14 +101,11 @@ public class CassandraBenchmark {
     createStmt += ";";
     session.execute(createStmt);
 
-    LOG.info("Created table.");
-
     // Create index on each attribute
     for (int i = 0; i < numAttributes; i++) {
-      LOG.info("Creating index on field" + i + "...");
+      LOG.info("Creating index on field" + i + " (if it does not exist)...");
       session.execute("CREATE INDEX IF NOT EXISTS ON " + datasetName + "(\"field" + i + "\");");
     }
-    LOG.info("All indexes created.");
 
     session.close();
   }
@@ -138,8 +141,6 @@ public class CassandraBenchmark {
 
   private void loadData() {
     Session session = cluster.connect("bench");
-
-    createTable();
     truncateTable();
 
     try (BufferedReader br = new BufferedReader(new FileReader(dataPath))) {
