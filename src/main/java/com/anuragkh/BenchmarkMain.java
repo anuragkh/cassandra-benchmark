@@ -36,10 +36,10 @@ public class BenchmarkMain {
     inputDataPathOpt.setRequired(true);
     options.addOption(inputDataPathOpt);
 
-    Option loadDataOpt = new Option("l", false, "Load data from input data path.");
+    Option loadDataOpt = new Option("l", false, "Execute load phase.");
     options.addOption(loadDataOpt);
 
-    Option benchOpt = new Option("b", false, "Execute benchmark.");
+    Option benchOpt = new Option("r", false, "Execute request phase.");
     options.addOption(benchOpt);
 
     CommandLineParser parser = new DefaultParser();
@@ -80,11 +80,12 @@ public class BenchmarkMain {
     String dataPath = cmd.getOptionValue('i');
     boolean disableComp = !cmd.hasOption('c');
     boolean enableLoad = cmd.hasOption('l');
+    boolean enableRequest = cmd.hasOption('r');
 
     CassandraBenchmark benchmark =
       new CassandraBenchmark(hostname, datasetName, numAttrs, disableComp, dataPath, enableLoad);
 
-    if (cmd.hasOption('b')) {
+    if (enableRequest) {
       switch (benchmarkType) {
         case "latency-get":
           benchmark.benchmarkGetLatency();
