@@ -198,7 +198,7 @@ public class CassandraBenchmark {
     LOG.info("Generating get queries...");
     ArrayList<String> queries = new ArrayList<>();
     for (int i = 0; i < numQueries; i++) {
-      long key = rng.nextLong() % preLoadedKeys;
+      long key = Math.abs(rng.nextLong()) % preLoadedKeys;
       queries.add(getStatement(key));
     }
     Collections.shuffle(queries);
@@ -232,7 +232,7 @@ public class CassandraBenchmark {
     LOG.info("Generating delete queries...");
     ArrayList<String> queries = new ArrayList<>();
     for (int i = 0; i < numQueries; i++) {
-      long key = rng.nextLong() % currentKey.get();
+      long key = Math.abs(rng.nextLong()) % currentKey.get();
       queries.add(deleteStatement(key));
     }
     Collections.shuffle(queries);
@@ -261,7 +261,7 @@ public class CassandraBenchmark {
     }
 
     while (queries.size() != numQueries) {
-      String randomQuery = queries.get(rng.nextInt() % queries.size());
+      String randomQuery = queries.get(Math.abs(rng.nextInt()) % queries.size());
       queries.add(randomQuery);
     }
 
