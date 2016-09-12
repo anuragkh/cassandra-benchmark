@@ -259,6 +259,12 @@ public class CassandraBenchmark {
       LOG.severe("I/O Exception occurred: " + e.getMessage());
       System.exit(0);
     }
+
+    while (queries.size() != numQueries) {
+      String randomQuery = queries.get(rng.nextInt() % queries.size());
+      queries.add(randomQuery);
+    }
+
     Collections.shuffle(queries);
     LOG.info("Generated queries.");
     return queries;
