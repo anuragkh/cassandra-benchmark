@@ -3,44 +3,38 @@ package com.anuragkh;
 import com.datastax.driver.core.*;
 
 import java.io.*;
-import java.util.*;
+import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 public class CassandraBenchmark {
 
   private Cluster cluster;
-  private String datasetName;
-  private int numAttributes;
-  private boolean disableCompression;
   private String dataPath;
-  private String insertPath;
-  private String filterPath;
+  private String attrPath;
   private AtomicLong currentKey;
-  private long preLoadedKeys;
-  private Random rng;
+
+  private int[] timestamps;
+  private String[] srcips;
+  private String[] dstips;
+  private int[] sports;
+  private int[] dports;
+  private byte[][] datas;
+
   private Logger LOG = Logger.getLogger(CassandraBenchmark.class.getName());
 
-  // Constants
-  static final int WARMUP_COUNT = 1000;
-  static final int MEASURE_COUNT = 10000;
+  static final long REPORT_RECORD_INTERVAL = 10000;
+  static final String TABLE_NAME = "packets";
+  static final String SCHEMA =
+    "(id BIGINT PRIMARY KEY, ts INT, srcip VARCHAR, dstip VARCHAR, sport INT, dport INT, data BLOB)";
 
-  static final int THREAD_QUERY_COUNT = 75000;
+  static final String INSERT_OP =
+    "INSERT INTO packets (id, ts, srcip, dstip, sport, dport, data) values (?,?,?,?,?,?,?)";
 
-  static final long WARMUP_TIME = 30000;
-  static final long MEASURE_TIME = 120000;
-  static final long COOLDOWN_TIME = 30000;
+  public CassandraBenchmark(String hostname, String dataPath, String attrPath) {
 
-  public CassandraBenchmark(String hostname, String datasetName, int numAttributes,
-    boolean disableCompression, String dataPath, boolean enableLoading) {
-
-    this.datasetName = datasetName;
-    this.numAttributes = numAttributes;
-    this.disableCompression = disableCompression;
     this.dataPath = dataPath;
-    this.insertPath = dataPath + ".inserts";
-    this.filterPath = dataPath + ".queries";
-    this.rng = new Random();
+    this.attrPath = attrPath;
 
     LOG.info("Creating cluster builder...");
     cluster = Cluster.builder().addContactPoint(hostname)
@@ -50,30 +44,19 @@ public class CassandraBenchmark {
 
     createTable();
 
+    truncateTable();
+
+    loadData();
+
     this.currentKey = new AtomicLong(0L);
-    if (enableLoading) {
-      loadData();
-    } else {
-      currentKey.set(countRows());
-      LOG.info("Skipping data loading as instructed...");
-    }
-    this.preLoadedKeys = currentKey.get();
-    LOG.info("Current key is " + currentKey.get());
 
     LOG.info("Initialization complete.");
   }
 
-  private long countRows() {
-    Session session = cluster.connect("bench");
-    Row result = session.execute("SELECT COUNT(*) as cnt FROM " + datasetName + ";").one();
-    session.close();
-    return result.getLong("cnt");
-  }
-
   private void truncateTable() {
-    LOG.info("Truncating table " + datasetName);
+    LOG.info("Truncating table " + TABLE_NAME);
     Session session = cluster.connect("bench");
-    session.execute("TRUNCATE " + datasetName + ";");
+    session.execute("TRUNCATE " + TABLE_NAME + ";");
     session.close();
     LOG.info("Table truncated.");
   }
@@ -88,341 +71,226 @@ public class CassandraBenchmark {
   }
 
   private void createTable() {
-    LOG.info("Creating table " + datasetName + " (if it does not exist)...");
+    LOG.info("Creating table " + TABLE_NAME + " (if it does not exist)...");
     Session session = cluster.connect("bench");
 
     // Create table if it does not exist
-    String createStmt = "CREATE TABLE IF NOT EXISTS " + datasetName + "(key BIGINT, ";
-    for (int i = 0; i < numAttributes; i++) {
-      createStmt += "field" + i + " VARCHAR, ";
-    }
-    createStmt += "PRIMARY KEY(key)) ";
-    if (disableCompression) {
-      createStmt += "WITH compression = { 'sstable_compression' : '' }";
-    }
-    createStmt += ";";
+    String createStmt = "CREATE TABLE IF NOT EXISTS " + TABLE_NAME + " " + SCHEMA + ";";
     session.execute(createStmt);
 
     // Create index on each attribute
-    for (int i = 0; i < numAttributes; i++) {
-      LOG.info("Creating index on field" + i + " (if it does not exist)...");
-      session.execute("CREATE INDEX IF NOT EXISTS ON " + datasetName + "(\"field" + i + "\");");
-    }
+    LOG.info("Creating index on ts (if it does not exist)...");
+    session.execute("CREATE INDEX IF NOT EXISTS ON " + TABLE_NAME + "(\"ts\");");
+
+    LOG.info("Creating index on srcip (if it does not exist)...");
+    session.execute("CREATE INDEX IF NOT EXISTS ON " + TABLE_NAME + "(\"srcip\");");
+
+    LOG.info("Creating index on dstip (if it does not exist)...");
+    session.execute("CREATE INDEX IF NOT EXISTS ON " + TABLE_NAME + "(\"dstip\");");
+
+    LOG.info("Creating index on sport (if it does not exist)...");
+    session.execute("CREATE INDEX IF NOT EXISTS ON " + TABLE_NAME + "(\"sport\");");
+
+    LOG.info("Creating index on dport (if it does not exist)...");
+    session.execute("CREATE INDEX IF NOT EXISTS ON " + TABLE_NAME + "(\"dport\");");
 
     session.close();
   }
 
-  private String insertStatement(String line) {
-    String[] values = line.split("\\|");
-    if (values.length < numAttributes) {
-      throw new IllegalArgumentException(line + " has < " + numAttributes + " attributes.");
-    }
-    String insertStmt = "INSERT INTO " + datasetName + " (";
-    for (int i = 0; i < numAttributes; i++) {
-      insertStmt += "field" + i + ", ";
-    }
-    insertStmt += "key) values (";
-    for (int i = 0; i < numAttributes; i++) {
-      insertStmt += "\'" + values[i] + "\', ";
-    }
-    insertStmt += currentKey.getAndAdd(1) + ");";
-    return insertStmt;
+  BoundStatement insertOp(PreparedStatement ps, long id, int ts, String sIP, String dIP, int sPort,
+    int dPort, byte[] data) {
+    BoundStatement bs = new BoundStatement(ps);
+    return bs.bind(id, ts, sIP, dIP, sPort, dPort, ByteBuffer.wrap(data));
   }
 
-  private String getStatement(long key) {
-    return "SELECT * FROM " + datasetName + " WHERE key = " + key + ";";
-  }
-
-  private String deleteStatement(long key) {
-    return "DELETE FROM " + datasetName + " WHERE key = " + key + ";";
-  }
-
-  private String filterStatement(int fieldId, String fieldValue) {
-    return "SELECT * FROM " + datasetName + " WHERE field" + fieldId + " = \'" + fieldValue + "\';";
+  private int countLines() {
+    BufferedReader reader = null;
+    try {
+      reader = new BufferedReader(new FileReader(attrPath));
+    } catch (FileNotFoundException e) {
+      LOG.severe("Error: " + e.getMessage());
+      System.exit(-1);
+    }
+    int lines = 0;
+    try {
+      while (reader.readLine() != null)
+        lines++;
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
+    try {
+      reader.close();
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
+    return lines;
   }
 
   private void loadData() {
-    Session session = cluster.connect("bench");
-    truncateTable();
+    // Generate queries
+    LOG.info("Loading packet data into memory...");
 
-    try (BufferedReader br = new BufferedReader(new FileReader(dataPath))) {
-      String line;
-      LOG.info("Loading data...");
-      while ((line = br.readLine()) != null) {
-        session.execute(insertStatement(line));
-        if (currentKey.get() % 100000 == 0) {
-          LOG.info("Loaded " + currentKey.get() + " keys.");
+    BufferedInputStream dataStream;
+    BufferedReader attrReader;
+
+    // Allocate space for packet data
+    int numPackets = countLines();
+    timestamps = new int[numPackets];
+    srcips = new String[numPackets];
+    dstips = new String[numPackets];
+    sports = new int[numPackets];
+    dports = new int[numPackets];
+    datas = new byte[numPackets][];
+
+    try {
+      dataStream = new BufferedInputStream(new FileInputStream(dataPath));
+      attrReader = new BufferedReader(new FileReader(attrPath));
+      String attrLine;
+      int i = 0;
+      while ((attrLine = attrReader.readLine()) != null) {
+        String[] attrs = attrLine.split("\\s+");
+        if (attrs.length != 6) {
+          LOG.severe("Error parsing attribute line: " + attrLine);
+          System.exit(-1);
         }
+        timestamps[i] = Integer.parseInt(attrs[0]);
+        int length = Integer.parseInt(attrs[1]);
+        srcips[i] = attrs[2];
+        dstips[i] = attrs[3];
+        sports[i] = Integer.parseInt(attrs[4]);
+        dports[i] = Integer.parseInt(attrs[5]);
+        datas[i] = new byte[length];
+        int nbytes = dataStream.read(datas[i]);
+        if (nbytes != length) {
+          LOG.severe("Error reading data: Length " + length + " does not match num bytes read.");
+          System.exit(-1);
+        }
+        i++;
       }
     } catch (FileNotFoundException e) {
-      LOG.severe("File " + dataPath + " not found: " + e.getMessage());
+      LOG.severe("File not found: " + e.getMessage());
       System.exit(0);
     } catch (IOException e) {
       LOG.severe("I/O Exception occurred: " + e.getMessage());
       System.exit(0);
     }
-    LOG.info("Load finished: Inserted " + currentKey.get() + " records.");
+    LOG.info("Loaded packet data in memory.");
   }
 
-  private void benchmarkLatency(String outputPath, ArrayList<String> queries) {
-    Session session = cluster.connect("bench");
+  class ProgressLogger {
+    private BufferedWriter out;
 
-    // Warmup
-    int warmupCount = queries.size() / 11;
-    int measureCount = queries.size() - warmupCount;
-    LOG.info("Warming up for " + warmupCount + " queries...");
-    for (int i = 0; i < warmupCount; i++) {
-      session.execute(queries.get(i));
-    }
-    LOG.info("Warmup complete.");
-
-    // Measure
-    LOG.info("Measuring for " + measureCount + " queries...");
-    try (BufferedWriter bw = new BufferedWriter(new FileWriter(outputPath))) {
-      for (int i = warmupCount; i < warmupCount + measureCount; i++) {
-        long startTime = System.nanoTime();
-        ResultSet resultSet = session.execute(queries.get(i));
-        int count = resultSet.all().size();
-        long endTime = System.nanoTime();
-        long duration = endTime - startTime;
-        bw.write(count + "\t" + duration + "\n");
-      }
-    } catch (IOException e) {
-      LOG.severe("I/O Exception occurred: " + e.getMessage());
-      System.exit(0);
-    }
-  }
-
-  private ArrayList<String> loadGetQueries(int numQueries) {
-    // Generate queries
-    LOG.info("Generating get queries...");
-    ArrayList<String> queries = new ArrayList<>();
-    for (int i = 0; i < numQueries; i++) {
-      long key = Math.abs(rng.nextLong()) % preLoadedKeys;
-      queries.add(getStatement(key));
-    }
-    Collections.shuffle(queries);
-    LOG.info("Generated queries.");
-    return queries;
-  }
-
-  private ArrayList<String> loadInsertQueries(int numQueries) {
-    // Generate queries
-    LOG.info("Generating insert queries...");
-    ArrayList<String> queries = new ArrayList<>();
-    try (BufferedReader br = new BufferedReader(new FileReader(insertPath))) {
-      String line;
-      while ((line = br.readLine()) != null && queries.size() < numQueries) {
-        queries.add(insertStatement(line));
-      }
-    } catch (FileNotFoundException e) {
-      LOG.severe("File " + insertPath + " not found: " + e.getMessage());
-      System.exit(0);
-    } catch (IOException e) {
-      LOG.severe("I/O Exception occurred: " + e.getMessage());
-      System.exit(0);
-    }
-    Collections.shuffle(queries);
-    LOG.info("Generated queries.");
-    return queries;
-  }
-
-  private ArrayList<String> loadDeleteQueries(int numQueries) {
-    // Generate queries
-    LOG.info("Generating delete queries...");
-    ArrayList<String> queries = new ArrayList<>();
-    for (int i = 0; i < numQueries; i++) {
-      long key = Math.abs(rng.nextLong()) % currentKey.get();
-      queries.add(deleteStatement(key));
-    }
-    Collections.shuffle(queries);
-    LOG.info("Generated queries.");
-    return queries;
-  }
-
-  private ArrayList<String> loadFilterQueries(int numQueries) {
-    // Generate queries
-    LOG.info("Generating insert queries...");
-    ArrayList<String> queries = new ArrayList<>();
-    try (BufferedReader br = new BufferedReader(new FileReader(filterPath))) {
-      String line;
-      while ((line = br.readLine()) != null && queries.size() < numQueries) {
-        Scanner lineScanner = new Scanner(line);
-        int fieldId = lineScanner.nextInt();
-        String fieldValue = lineScanner.next();
-        queries.add(filterStatement(fieldId, fieldValue));
-      }
-    } catch (FileNotFoundException e) {
-      LOG.severe("File " + filterPath + " not found: " + e.getMessage());
-      System.exit(0);
-    } catch (IOException e) {
-      LOG.severe("I/O Exception occurred: " + e.getMessage());
-      System.exit(0);
-    }
-
-    while (queries.size() != numQueries) {
-      String randomQuery = queries.get(Math.abs(rng.nextInt()) % queries.size());
-      queries.add(randomQuery);
-    }
-
-    Collections.shuffle(queries);
-    LOG.info("Generated queries.");
-    return queries;
-  }
-
-  public void benchmarkGetLatency() {
-    benchmarkLatency("get_latency", loadGetQueries(WARMUP_COUNT + MEASURE_COUNT));
-  }
-
-  public void benchmarkInsertLatency() {
-
-    benchmarkLatency("insert_latency", loadInsertQueries(WARMUP_COUNT + MEASURE_COUNT));
-  }
-
-  public void benchmarkDeleteLatency() {
-    benchmarkLatency("delete_latency", loadDeleteQueries(WARMUP_COUNT + MEASURE_COUNT));
-  }
-
-  public void benchmarkFilterLatency() {
-    benchmarkLatency("filter_latency", loadFilterQueries(WARMUP_COUNT + MEASURE_COUNT));
-  }
-
-  private ArrayList<String> threadQueries(double getM, double insertM, double deleteM,
-    double filterM) throws IOException {
-
-    Iterator<String> getQueries = loadGetQueries(THREAD_QUERY_COUNT).iterator();
-    Iterator<String> insertQueries = loadInsertQueries(THREAD_QUERY_COUNT).iterator();
-    Iterator<String> deleteQueries = loadDeleteQueries(THREAD_QUERY_COUNT).iterator();
-    Iterator<String> filterQueries = loadFilterQueries(THREAD_QUERY_COUNT).iterator();
-    ArrayList<String> queries = new ArrayList<>();
-
-    Random localRng = new Random();
-    for (int i = 0; i < THREAD_QUERY_COUNT; i++) {
-      double r = localRng.nextDouble();
-      if (r <= getM) {
-        queries.add(getQueries.next());
-      } else if (r <= insertM) {
-        queries.add(insertQueries.next());
-      } else if (r <= deleteM) {
-        queries.add(deleteQueries.next());
-      } else if (r <= filterM) {
-        queries.add(filterQueries.next());
+    public ProgressLogger(String fileName) {
+      try {
+        out = new BufferedWriter(new FileWriter(fileName));
+      } catch (IOException e) {
+        LOG.severe("I/O Exception occurred: " + e.getMessage());
+        System.exit(0);
       }
     }
 
-    return queries;
+    public synchronized void logProgress(long numOps) {
+      try {
+        out.write(System.currentTimeMillis() + " " + numOps + "\n");
+      } catch (IOException e) {
+        LOG.severe("I/O Exception occurred: " + e.getMessage());
+        System.exit(0);
+      }
+    }
+
+    public void close() {
+      try {
+        out.close();
+      } catch (IOException e) {
+        LOG.severe("I/O Exception occurred: " + e.getMessage());
+        System.exit(0);
+      }
+    }
   }
 
-  class BenchmarkThread extends Thread {
+
+  class LoaderThread extends Thread {
     private int index;
-    private Iterator<String> queries;
     private Session session;
-    private double queryThput;
-    private double keyThput;
+    private int localOpsProcessed;
+    private double throughput;
+    private PreparedStatement ps;
+    private ProgressLogger logger;
 
-    public BenchmarkThread(int index, ArrayList<String> queries) {
+    public LoaderThread(int index, ProgressLogger logger) {
       this.index = index;
-      this.queries = queries.iterator();
       this.session = cluster.connect("bench");
-      this.keyThput = 0.0;
-      this.queryThput = 0.0;
+      this.ps = session.prepare(INSERT_OP);
+      this.logger = logger;
+      this.localOpsProcessed = 0;
+      this.throughput = 0.0;
     }
 
     public int getIndex() {
       return index;
     }
 
-    public double getKeyThput() {
-      return keyThput;
-    }
-
-    public double getQueryThput() {
-      return queryThput;
+    public double getThroughput() {
+      return throughput;
     }
 
     private int executeOne() {
-      ResultSet resultSet = session.execute(queries.next());
-      return resultSet.all().size();
+      long id = currentKey.getAndAdd(1L);
+      int i = (int) id;
+      if (i >= timestamps.length)
+        return -1;
+      BoundStatement bs =
+        insertOp(ps, id, timestamps[i], srcips[i], dstips[i], sports[i], dports[i], datas[i]);
+      session.execute(bs);
+      localOpsProcessed++;
+      return i + 1;
     }
 
     @Override public void run() {
-      // Warmup
-      long warmupStart = System.currentTimeMillis();
-      while (System.currentTimeMillis() - warmupStart < WARMUP_TIME && queries.hasNext()) {
-        executeOne();
-      }
-
-      if (!queries.hasNext()) {
-        LOG.severe("[Thread " + index + "] Ran out of queries in warmup phase.");
-        return;
-      }
-
-      // Measure
-      long numQueries = 0;
-      long numKeys = 0;
+      int totOpsProcessed = 0;
       long measureStart = System.currentTimeMillis();
-      while (System.currentTimeMillis() - measureStart < MEASURE_TIME && queries.hasNext()) {
-        numKeys += executeOne();
-        numQueries++;
+      while (totOpsProcessed != -1) {
+        totOpsProcessed = executeOne();
+        if (totOpsProcessed % REPORT_RECORD_INTERVAL == 0) {
+          logger.logProgress(totOpsProcessed);
+        }
       }
       long measureEnd = System.currentTimeMillis();
       double totsecs = (double) (measureEnd - measureStart) / 1000.0;
-      queryThput = (double) numQueries / totsecs;
-      keyThput = (double) numKeys / totsecs;
-
-      if (!queries.hasNext()) {
-        LOG.warning("[Thread " + index + "]Ran out of queries in measure phase.");
-        return;
-      }
-
-      // Cooldown
-      long cooldownStart = System.currentTimeMillis();
-      while (System.currentTimeMillis() - cooldownStart < COOLDOWN_TIME && queries.hasNext()) {
-        executeOne();
-      }
+      throughput = (double) localOpsProcessed / totsecs;
     }
   }
 
-  public void benchmarkThroughput(double getFrac, double insertFrac, double deleteFrac,
-    double filterFrac, int numThreads) {
-    double insertM = getFrac + insertFrac;
-    double deleteM = insertM + deleteFrac;
-    double filterM = deleteM + filterFrac;
-    if (filterM != 1.0) {
-      LOG.warning("Expected filter mark to be 1.0, but is actually " + filterM);
-    }
+  public void loadPackets(int numThreads) {
 
-    BenchmarkThread[] threads = new BenchmarkThread[numThreads];
+    LoaderThread[] threads = new LoaderThread[numThreads];
+    ProgressLogger logger = new ProgressLogger("record_progress");
+
     for (int i = 0; i < numThreads; i++) {
-      try {
-        LOG.info("Initializing thread " + i + "...");
-        threads[i] = new BenchmarkThread(i, threadQueries(getFrac, insertM, deleteM, filterM));
-        LOG.info("Thread " + i + " initialization complete.");
-      } catch (IOException e) {
-        LOG.severe("Error in loading queries for thread " + i);
-        System.exit(0);
-      }
+      LOG.info("Initializing thread " + i + "...");
+      threads[i] = new LoaderThread(i, logger);
+      LOG.info("Thread " + i + " initialization complete.");
     }
 
-    for (BenchmarkThread thread : threads) {
+    for (LoaderThread thread : threads) {
       thread.start();
     }
 
-    String resFile =
-      "throughput_" + getFrac + "_" + insertFrac + "_" + deleteFrac + "_" + filterFrac + "_"
-        + numThreads;
+    String resFile = "write_throughput";
     try (BufferedWriter br = new BufferedWriter(new FileWriter(resFile))) {
-      for (BenchmarkThread thread : threads) {
+      for (LoaderThread thread : threads) {
         try {
           thread.join();
         } catch (InterruptedException e) {
           LOG.severe("Thread " + thread.getIndex() + " was interrupted: " + e.getMessage());
         }
-        br.write(thread.getKeyThput() + "\t" + thread.getQueryThput() + "\n");
+        br.write(thread.getThroughput() + "\n");
       }
     } catch (IOException e) {
       LOG.severe("I/O exception writing to output file: " + e.getMessage());
     }
+
+    logger.close();
   }
 
   public void close() {
