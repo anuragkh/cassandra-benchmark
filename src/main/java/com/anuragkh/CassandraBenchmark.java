@@ -17,6 +17,7 @@ public class CassandraBenchmark {
   private String insertPath;
   private String filterPath;
   private AtomicLong currentKey;
+  private long preLoadedKeys;
   private Random rng;
   private Logger LOG = Logger.getLogger(CassandraBenchmark.class.getName());
 
@@ -56,6 +57,8 @@ public class CassandraBenchmark {
       currentKey.set(countRows());
       LOG.info("Skipping data loading as instructed...");
     }
+    this.preLoadedKeys = currentKey.get();
+    LOG.info("Current key is " + currentKey.get());
 
     LOG.info("Initialization complete.");
   }
@@ -195,7 +198,7 @@ public class CassandraBenchmark {
     LOG.info("Generating get queries...");
     ArrayList<String> queries = new ArrayList<>();
     for (int i = 0; i < numQueries; i++) {
-      long key = rng.nextLong() % currentKey.get();
+      long key = Math.abs(rng.nextLong()) % preLoadedKeys;
       queries.add(getStatement(key));
     }
     Collections.shuffle(queries);
@@ -229,7 +232,7 @@ public class CassandraBenchmark {
     LOG.info("Generating delete queries...");
     ArrayList<String> queries = new ArrayList<>();
     for (int i = 0; i < numQueries; i++) {
-      long key = rng.nextLong() % currentKey.get();
+      long key = Math.abs(rng.nextLong()) % currentKey.get();
       queries.add(deleteStatement(key));
     }
     Collections.shuffle(queries);
@@ -256,6 +259,12 @@ public class CassandraBenchmark {
       LOG.severe("I/O Exception occurred: " + e.getMessage());
       System.exit(0);
     }
+
+    while (queries.size() != numQueries) {
+      String randomQuery = queries.get(Math.abs(rng.nextInt()) % queries.size());
+      queries.add(randomQuery);
+    }
+
     Collections.shuffle(queries);
     LOG.info("Generated queries.");
     return queries;
@@ -344,7 +353,7 @@ public class CassandraBenchmark {
       }
 
       if (!queries.hasNext()) {
-        LOG.severe("Ran out of queries in warmup phase.");
+        LOG.severe("[Thread " + index + "] Ran out of queries in warmup phase.");
         return;
       }
 
@@ -362,7 +371,7 @@ public class CassandraBenchmark {
       keyThput = (double) numKeys / totsecs;
 
       if (!queries.hasNext()) {
-        LOG.warning("Ran out of queries in measure phase.");
+        LOG.warning("[Thread " + index + "]Ran out of queries in measure phase.");
         return;
       }
 
@@ -386,7 +395,9 @@ public class CassandraBenchmark {
     BenchmarkThread[] threads = new BenchmarkThread[numThreads];
     for (int i = 0; i < numThreads; i++) {
       try {
+        LOG.info("Initializing thread " + i + "...");
         threads[i] = new BenchmarkThread(i, threadQueries(getFrac, insertM, deleteM, filterM));
+        LOG.info("Thread " + i + " initialization complete.");
       } catch (IOException e) {
         LOG.severe("Error in loading queries for thread " + i);
         System.exit(0);
